@@ -2,7 +2,7 @@
 title: Z Search
 author: @zmail-tech
 description: Combines SearXNG (simple) and Vane (deep) searches with automatic mode selection based on query complexity. Injects current date/time for temporal queries.
-version: 1.0
+version: 1.0.2
 license: MIT
 """
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class Tools:
     """
-    Optimized Search Tool that combines SearXNG and Vane search engines.
+    Z Search Tool that combines SearXNG and Vane search engines.
     Automatically selects the appropriate search mode based on query complexity.
     Injects current date/time for temporal queries.
     """
@@ -986,11 +986,11 @@ class Tools:
     # MAIN FUNCTION
     # ========================================================================
 
-    async def optimized_search(
+    async def z_search(
         self, query: str, __event_emitter__: callable = None
     ) -> Dict[str, Any]:
         """
-        Perform an optimized search using SearXNG (simple) or Vane (deep).
+        Perform a z-search using SearXNG (simple) or Vane (deep).
 
         Automatically injects current date/time for temporal queries like
         "what's the weather today" or "latest news".
