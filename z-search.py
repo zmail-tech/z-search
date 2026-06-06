@@ -1,8 +1,8 @@
 """
-title: Optimized Search
-author: @cooooookiecrisp
+title: Z Search
+author: @zmail-tech
 description: Combines SearXNG (simple) and Vane (deep) searches with automatic mode selection based on query complexity. Injects current date/time for temporal queries.
-version: 1.5
+version: 1.0
 license: MIT
 """
 
