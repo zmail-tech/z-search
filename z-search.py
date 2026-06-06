@@ -2,7 +2,7 @@
 title: Z Search
 author: @zmail-tech
 description: Combines SearXNG (simple) and Vane (deep) searches with automatic mode selection based on query complexity. Injects current date/time for temporal queries.
-version: 1.0.2
+version: 1.2.0
 license: MIT
 """
 
@@ -117,7 +117,7 @@ class Tools:
         )
         DEFAULT_OPTIMIZATION: str = Field(
             default="speed",
-            description="Default optimization mode: speed, balanced, or quality",
+            description="Optimization mode: speed, balanced, quality, or auto (LLM decides)",
         )
         DEFAULT_MAX_RESULTS: int = Field(
             default=5,
@@ -190,7 +190,7 @@ class Tools:
         # --------------------------------------------------------------------
         optimization: str = Field(
             default="speed",
-            description="Optimization mode for deep search: 'speed', 'balanced', or 'quality'",
+            description="Optimization mode for deep search: 'speed', 'balanced', 'quality', or 'auto' (LLM decides)",
         )
 
     # ========================================================================
@@ -694,8 +694,143 @@ class Tools:
             "speed": "speed",
             "balanced": "balanced",
             "quality": "quality",
+            "auto": "auto",
         }
         return depth_mapping.get(depth.lower(), "speed")
+
+    def _heuristic_optimization(self, query: str) -> Tuple[str, Dict[str, Any]]:
+        """Heuristic fallback for auto optimization. Returns (optimization_level, reasoning)."""
+        reasoning = {
+            "query": query,
+            "score": 0,
+            "signals": [],
+            "method": "heuristic",
+        }
+        score = 0
+        tokens = query.split()
+        token_count = len(tokens)
+        query_lower = query.lower()
+
+        # Token-based signals
+        if token_count < 6:
+            score += 2
+            reasoning["signals"].append(f"short query ({token_count} tokens) → speed")
+        elif token_count > 15:
+            score -= 1
+            reasoning["signals"].append(f"long query ({token_count} tokens) → quality")
+
+        # Question mark / interrogative count
+        q_count = query.count("?")
+        if q_count >= 2:
+            score -= 1
+            reasoning["signals"].append(f"{q_count} questions → quality")
+
+        # Comparative keywords → balanced
+        comparative_keywords = ["vs", "compare", "difference", "better", "worse", "versus"]
+        comp_matches = [k for k in comparative_keywords if k in query_lower]
+        if len(comp_matches) >= 1:
+            score = min(score, 0)
+            reasoning["signals"].append(f"comparative keywords ({', '.join(comp_matches)}) → balanced")
+
+        # Reasoning keywords → quality
+        reasoning_keywords = [
+            "explain", "why", "should", "recommend", "best for",
+            "evaluate", "analyze", "pros", "cons", "alternative"
+        ]
+        reason_matches = [k for k in reasoning_keywords if k in query_lower]
+        if len(reason_matches) >= 2:
+            score -= 2
+            reasoning["signals"].append(f"reasoning keywords ({', '.join(reason_matches)}) → quality")
+
+        # Simple lookup patterns → speed
+        lookup_patterns = [r"\bwhat is\b", r"\bwhat does .+ mean\b", r"\bdefine\b", r"\bwho is\b"]
+        lookup_matches = [p for p in lookup_patterns if re.search(p, query_lower)]
+        if lookup_matches:
+            score += 2
+            reasoning["signals"].append(f"lookup patterns ({', '.join(lookup_matches)}) → speed")
+
+        # Multi-part indicators → quality
+        multipart_keywords = ["and", "also", "plus", "additionally", "difference between"]
+        multi_matches = [k for k in multipart_keywords if k in query_lower]
+        for m in multi_matches:
+            score -= 1
+        if multi_matches:
+            reasoning["signals"].append(f"multi-part indicators ({', '.join(multi_matches)}) → quality")
+
+        reasoning["score"] = score
+
+        # Score mapping: >=2 → speed, 0-1 → balanced, <=-1 → quality (inverted: positive=speed, negative=quality)
+        if score >= 2:
+            level = "speed"
+        elif score >= 0:
+            level = "balanced"
+        else:
+            level = "quality"
+
+        return level, reasoning
+
+    def _analyze_optimization(self, query: str) -> Tuple[str, Dict[str, Any]]:
+        """Analyze query and determine optimization level. Tries LLM first, falls back to heuristic."""
+        system_prompt = (
+            "You are a query complexity analyzer. Given a search query, classify it into one of three optimization levels:\n\n"
+            "- speed: Simple factual lookup, definition, single-answer question, current event, short straightforward query\n"
+            "- balanced: Requires some synthesis, comparison of 2-3 items, moderate reasoning, multi-fact answer\n"
+            "- quality: Deep research, complex multi-part question, open-ended exploration, evaluation, decision-making, pros/cons analysis\n\n"
+            "Respond with ONLY the level name: speed, balanced, or quality."
+        )
+
+        vane_url = self._get_config("VANE_URL")
+        chat_provider_id = self._get_config("VANE_CHAT_MODEL_PROVIDER_ID")
+        chat_model_key = self._get_config("VANE_CHAT_MODEL_KEY")
+
+        if chat_provider_id:
+            try:
+                payload = {
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": query},
+                    ],
+                    "chatModel": {"providerId": chat_provider_id, "key": chat_model_key},
+                    "stream": False,
+                }
+                response = requests.post(
+                    f"{vane_url}/api/chat",
+                    json=payload,
+                    timeout=10,
+                    headers={"Content-Type": "application/json"},
+                )
+                response.raise_for_status()
+                data = response.json()
+                content = ""
+                if isinstance(data, dict):
+                    message = data.get("message", "") or data.get("content", "")
+                    if isinstance(message, dict):
+                        content = message.get("content", "")
+                    else:
+                        content = str(message)
+                else:
+                    content = str(data)
+                content_lower = content.lower().strip()
+                if "speed" in content_lower:
+                    return "speed", {"method": "llm", "query": query, "raw_response": content}
+                elif "quality" in content_lower:
+                    return "quality", {"method": "llm", "query": query, "raw_response": content}
+                elif "balanced" in content_lower:
+                    return "balanced", {"method": "llm", "query": query, "raw_response": content}
+                else:
+                    logger.warning(f"Unrecognized LLM optimization response: {content}")
+                    return self._heuristic_optimization(query)
+            except requests.exceptions.Timeout:
+                logger.warning("LLM optimization call timed out, falling back to heuristic")
+                return self._heuristic_optimization(query)
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"LLM optimization call failed: {e}, falling back to heuristic")
+                return self._heuristic_optimization(query)
+            except (json.JSONDecodeError, KeyError, AttributeError) as e:
+                logger.warning(f"Malformed LLM optimization response: {e}, falling back to heuristic")
+                return self._heuristic_optimization(query)
+
+        return self._heuristic_optimization(query)
 
     # ========================================================================
     # SEARCH IMPLEMENTATIONS
@@ -889,12 +1024,27 @@ class Tools:
 
         try:
             vane_sources = self._map_sources_to_vane(sources)
-            optimization_mode = self._map_depth_to_optimization(depth)
+
+            # Resolve auto optimization
+            optimization_mode = depth
+            auto_opt_reasoning = None
+            if depth == "auto":
+                optimization_mode, auto_opt_reasoning = self._analyze_optimization(query)
+
+            optimization_mode = self._map_depth_to_optimization(optimization_mode)
 
             if emit_status:
-                await emit_status(
-                    f"⚙️ Mode: {optimization_mode} | Sources: {vane_sources}"
-                )
+                if depth == "auto":
+                    method = auto_opt_reasoning.get("method", "heuristic") if auto_opt_reasoning else "heuristic"
+                    signals = auto_opt_reasoning.get("signals", []) if auto_opt_reasoning else []
+                    reason_excerpt = "; ".join(signals[:2]) if signals else f"({method} analysis)"
+                    await emit_status(
+                        f"⚙️ Optimization: {optimization_mode} (auto-selected: {reason_excerpt}) | Sources: {vane_sources}"
+                    )
+                else:
+                    await emit_status(
+                        f"⚙️ Mode: {optimization_mode} | Sources: {vane_sources}"
+                    )
 
             payload = {
                 "query": query,
@@ -951,6 +1101,9 @@ class Tools:
                 "datetime_context": datetime_info,
                 "query_used": query,
             }
+
+            if depth == "auto" and auto_opt_reasoning:
+                response_data["auto_optimization"] = auto_opt_reasoning
 
             if show_reasoning:
                 response_data["selection_reasoning"] = reasoning

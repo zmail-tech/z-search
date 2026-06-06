@@ -3,7 +3,7 @@
 An optimized search tool that combines SearXNG (simple) and Vane (deep) search engines with automatic mode selection based on query complexity. Injects current date/time for temporal queries.
 
 **Author:** Zmail-Tech
-**Version:** 1.0.1
+**Version:** 1.2.0
 **License:** MIT
 
 Based on the original Optimized Search tool by [@cooooookiecrisp](https://github.com/cooooookiecrisp) (v1.5, MIT).
@@ -24,6 +24,7 @@ In **auto** mode, the tool analyzes query complexity (token count, keywords, int
 - Configurable search sources: `web`, `academia`, `social`
 - Full-page content extraction with snippet consistency analysis
 - Three optimization modes for deep search: `speed`, `balanced`, `quality`
+- Auto optimization mode — lets the LLM (or heuristics) select the best optimization per query
 - Dual configuration layers: admin valves (system-wide) and user valves (per-chat overrides)
 
 ## Requirements
@@ -58,7 +59,7 @@ Configure via Admin Panel → Tools → Gear Icon.
 | `ENABLE_FULL_FETCH` | `true` | Enable full-page extraction in simple mode |
 | `MAX_FULL_FETCH_RESULTS` | `3` | Top results to fully fetch (1–10) |
 | `SHOW_SELECTION_REASONING` | `true` | Show mode selection reasoning |
-| `DEFAULT_OPTIMIZATION` | `speed` | Deep search optimization: `speed`, `balanced`, `quality` |
+| `DEFAULT_OPTIMIZATION` | `speed` | Deep search optimization: `speed`, `balanced`, `quality`, `auto` |
 | `DEFAULT_MAX_RESULTS` | `5` | Max results to return (1–20) |
 
 ### User Valves (Per-chat overrides)
@@ -73,7 +74,7 @@ Available in the chat interface when using the tool. These override admin settin
 | `full_fetch_results` | `3` | Number of results to fully fetch (1–10) |
 | `show_reasoning` | `true` | Display mode selection reasoning |
 | `max_results` | `5` | Maximum results to return (1–20) |
-| `optimization` | `speed` | Deep search optimization mode |
+| `optimization` | `speed` | Deep search optimization: `speed`, `balanced`, `quality`, `auto` |
 
 ## Usage
 
@@ -93,6 +94,23 @@ Fast, lightweight search. Returns result titles, URLs, snippets, and optionally 
 
 ### Deep (Vane)
 AI-synthesized answers with source citations. Supports configurable LLM backends and optimization modes (`speed`, `balanced`, `quality`).
+
+### Auto Optimization (Deep only)
+When set to `auto`, optimization is determined per-query rather than being fixed. The tool first attempts an LLM-based classification via Vane's `/api/chat` endpoint. On any failure (timeout, unreachable endpoint, malformed response), it falls back to a heuristic scoring engine.
+
+**Heuristic signals:**
+
+| Signal | Direction |
+|---|---|
+| Query < 6 tokens | +2 → speed |
+| Query > 15 tokens | +1 → quality |
+| 2+ question marks | +1 → quality |
+| Comparative keywords (`vs`, `compare`, `better`, etc.) | clamp to balanced |
+| 2+ reasoning keywords (`explain`, `why`, `recommend`, `pros`, `cons`, etc.) | +2 → quality |
+| Simple lookup patterns (`what is`, `who is`, `define`, etc.) | +2 → speed |
+| Multi-part indicators (`and`, `also`, `plus`, etc.) | each +1 → quality |
+
+Score mapping: `>= 2` → speed, `0–1` → balanced, `<= -1` → quality.
 
 ### Auto
 Analyzes the query using heuristics:
